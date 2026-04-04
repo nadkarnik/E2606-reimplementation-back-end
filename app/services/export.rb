@@ -31,10 +31,11 @@ class Export
   #   1,Team 1,Alice; Bob
   #   2,Team 2,Carol; Dan
   #
-  def self.perform(export_class, ordered_headers)
+  def self.export_csv(export_class, ordered_headers)
+    ordered_headers ||= export_class.internal_and_external_fields
     mapping = FieldMapping.from_header(export_class, ordered_headers)
 
-    CSV.generate do |csv|
+    csv_contents = CSV.generate do |csv|
       class_fields = mapping.ordered_fields.select{ |ele| export_class.internal_fields.include?(ele) }
 
 
@@ -42,20 +43,28 @@ class Export
       csv << ordered_headers
 
       # Insert each row in order, using the values of the hash
-      export_class.all.each do |record|
+      export_class.filter.call.each do |record|
         row = class_fields.map{|f| record.send(f)}
 
-        export_class.external_classes.each do |external_class|
+        Array(export_class.external_classes).each do |external_class|
           ext_class_fields = mapping.ordered_fields.select{ |ele| external_class.fields.include?(ele) }
           found_record = record.send(external_class.ref_class.name.underscore)
           row += ext_class_fields.map do |f|
-            found_record.send(ExternalClass.unappended_class_name(external_class.ref_class, f)) if f
+            found_record&.send(ExternalClass.unappended_class_name(external_class.ref_class, f)) if f
           end
         end
 
         csv << row
       end
     end
+
+    [{ name: export_class.name, contents: csv_contents }]
+  end
+
+  def self.perform(export_class, ordered_headers = nil)
+    return ExportHelper.export_has_many_graph(export_class) if export_class.export_submodels
+
+    export_csv(export_class, ordered_headers)
   end
 
 end
