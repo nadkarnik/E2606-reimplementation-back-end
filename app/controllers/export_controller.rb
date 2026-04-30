@@ -1,21 +1,25 @@
 # This controller handles exporting data from the application to various formats.
 class ExportController < ApplicationController
+  SUPPORTED_EXPORT_CLASSES = {
+    "User" => User,
+    "Team" => Team,
+    "CourseParticipant" => CourseParticipant,
+    "AssignmentParticipant" => AssignmentParticipant,
+    "ProjectTopic" => ProjectTopic,
+    "Questionnaire" => Questionnaire,
+    "Item" => Item,
+    "QuestionAdvice" => QuestionAdvice
+  }.freeze
+
   before_action :export_params
 
   def resolve_export_class(name)
-  # Try top-level first
-    return name.constantize
-  rescue NameError
-    # Try Pseudo namespace
-    begin
-      "Pseudo::#{name}".constantize
-    rescue NameError
-      nil
-    end
+    SUPPORTED_EXPORT_CLASSES[name.to_s]
   end
 
   def index
     klass = resolve_export_class(params[:class])
+    raise ArgumentError, "Unsupported export class: #{params[:class]}" if klass.nil?
     
     render json: export_metadata_for(klass), status: :ok
   rescue StandardError => e
@@ -33,9 +37,26 @@ class ExportController < ApplicationController
       end
 
     klass = resolve_export_class(params[:class])
+    raise ArgumentError, "Unsupported export class: #{params[:class]}" if klass.nil?
     
     csv_file = if klass == Team
                  Team.with_assignment_context(params[:assignment_id]) do
+                   Export.perform(klass, ordered_fields)
+                 end
+               elsif klass == AssignmentParticipant
+                 # AssignmentParticipant export should include only the
+                 # participants for the selected assignment.
+                 AssignmentParticipant.with_assignment_context(params[:assignment_id], current_user) do
+                   named_export_files(Export.perform(klass, ordered_fields), assignment_participant_export_name(params[:assignment_id]))
+                 end
+               elsif klass == CourseParticipant
+                 # CourseParticipant export should include only the
+                 # participants for the selected course.
+                 CourseParticipant.with_course_context(params[:course_id], current_user) do
+                   named_export_files(Export.perform(klass, ordered_fields), course_participant_export_name(params[:course_id]))
+                 end
+               elsif klass == ProjectTopic
+                 ProjectTopic.with_assignment_context(params[:assignment_id]) do
                    Export.perform(klass, ordered_fields)
                  end
                else
@@ -54,12 +75,44 @@ class ExportController < ApplicationController
   private
 
   def export_params
-    params.permit(:class, :ordered_fields, :assignment_id)
+    params.permit(:class, :ordered_fields, :assignment_id, :course_id)
   end
 
   def export_metadata_for(klass)
+    # The participant CSV intentionally exposes username only. Other user
+    # details are previewed from the users table but not exported as input.
+    if klass == AssignmentParticipant
+      AssignmentParticipant.with_assignment_context(params[:assignment_id], current_user) do
+        return {
+          mandatory_fields: klass.mandatory_fields,
+          optional_fields: klass.optional_fields,
+          external_fields: klass.external_fields
+        }
+      end
+    end
+
+    if klass == CourseParticipant
+      CourseParticipant.with_course_context(params[:course_id], current_user) do
+        return {
+          mandatory_fields: klass.mandatory_fields,
+          optional_fields: klass.optional_fields,
+          external_fields: klass.external_fields
+        }
+      end
+    end
+
     if klass == Team
       Team.with_assignment_context(params[:assignment_id]) do
+        return {
+          mandatory_fields: klass.mandatory_fields,
+          optional_fields: klass.optional_fields,
+          external_fields: klass.external_fields
+        }
+      end
+    end
+
+    if klass == ProjectTopic
+      ProjectTopic.with_assignment_context(params[:assignment_id]) do
         return {
           mandatory_fields: klass.mandatory_fields,
           optional_fields: klass.optional_fields,
@@ -73,5 +126,26 @@ class ExportController < ApplicationController
       optional_fields: klass.optional_fields,
       external_fields: klass.external_fields
     }
+  end
+
+  # Scoped participant exports use readable filenames while keeping the CSV
+  # body limited to import-friendly fields such as username.
+  def named_export_files(files, name)
+    Array(files).map { |file| file.merge(name: name) }
+  end
+
+  def assignment_participant_export_name(assignment_id)
+    assignment = Assignment.find_by(id: assignment_id)
+    scoped_export_name('AssignmentParticipant', assignment&.name, assignment_id)
+  end
+
+  def course_participant_export_name(course_id)
+    course = Course.find_by(id: course_id)
+    scoped_export_name('CourseParticipant', course&.name, course_id)
+  end
+
+  def scoped_export_name(base_name, scope_name, scope_id)
+    parts = [base_name, scope_name.presence || 'scope', scope_id.presence].compact
+    parts.join('_').parameterize(separator: '_')
   end
 end

@@ -147,15 +147,6 @@ module ImportableExportableHelper
     end
   end
 
-  # set submodel export
-  def export_submodels(bool_export = nil)
-    if bool_export.nil?
-      @class_bool_export
-    else
-      @class_bool_export = bool_export
-    end
-  end
-
   ## Provide filter_proc with a custom method to aggregare records and spoof nonexistent models.
   ##
   def filter(filter_proc = nil)
@@ -232,7 +223,7 @@ module ImportableExportableHelper
   # Then external fields are removed (to prevent duplication).
   # --------------------------------------------------------------
   def internal_fields
-    (column_names + (mandatory_fields || [])).uniq - external_fields
+    (column_names + (mandatory_fields || [])).uniq - external_fields - hidden_fields
   end
 
   # --------------------------------------------------------------
